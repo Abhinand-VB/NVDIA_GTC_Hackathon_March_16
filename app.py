@@ -1,0 +1,241 @@
+"""
+GPU Efficiency Advisor using NVIDIA Nemotron
+Hackathon MVP - single-file Streamlit app.
+"""
+from __future__ import annotations
+
+import html
+import os
+import streamlit as st
+import requests
+
+# Load .env from the same folder as this script (project root)
+try:
+    from dotenv import load_dotenv
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(_script_dir, ".env"))
+    if not os.environ.get("NVIDIA_API_KEY"):
+        load_dotenv(os.path.join(_script_dir, ".env.example"))
+except ImportError:
+    pass  # python-dotenv not installed; use system env only
+
+# ---------------------------------------------------------------------------
+# Configuration - change model or endpoint here if needed
+# ---------------------------------------------------------------------------
+# NVIDIA NIM chat completions endpoint (OpenAI-compatible)
+NEMOTRON_API_BASE = "https://integrate.api.nvidia.com/v1"
+# Model: Nemotron 3 Super 120B; alternatives: nvidia/nemotron-3-nano-30b-a3b
+NEMOTRON_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """You are an expert GPU performance optimization advisor focused on NVIDIA workloads.
+Your task is to analyze a user's AI training or inference configuration and provide practical recommendations to improve:
+1. GPU utilization
+2. Memory efficiency
+3. Training or inference speed
+4. Overall compute cost
+
+When responding, use this format:
+
+Bottleneck Summary:
+- Briefly identify the main inefficiencies
+
+Optimization Suggestions:
+- Give 4 to 6 actionable suggestions
+- Be practical and specific
+- Mention techniques such as mixed precision, batch size tuning, gradient accumulation, distributed training, quantization, checkpointing, better GPU sizing, data pipeline improvements, or inference batching when relevant
+
+Estimated Impact:
+- Briefly describe likely improvements in utilization, speed, or cost
+
+Important:
+- Do not invent hard numbers unless clearly framed as estimates
+- Keep the tone concise, technical, and demo-friendly
+- If the input is incomplete, still provide best-effort recommendations based on the available details"""
+
+
+def call_nemotron_chat(messages: list[dict], api_key: str) -> str | None:
+    """
+    Send a chat-style request to NVIDIA Nemotron and return the assistant reply.
+    Returns None on failure. Defensive parsing for varying response shapes.
+    """
+    url = f"{NEMOTRON_API_BASE}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": NEMOTRON_MODEL,
+        "messages": messages,
+        "max_tokens": 1024,
+        "temperature": 0.3,
+        "stream": False,
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        # OpenAI-style: choices[0].message.content
+        choices = data.get("choices")
+        if choices and len(choices) > 0:
+            msg = choices[0].get("message") or choices[0].get("delta")
+            if msg and isinstance(msg.get("content"), str):
+                return msg["content"].strip()
+        # Fallback: try to find any content in the response
+        if isinstance(data.get("content"), str):
+            return data["content"].strip()
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"API request failed: {e}")
+        if hasattr(e, "response") and e.response is not None:
+            try:
+                err_body = e.response.json()
+                detail = err_body.get("detail") or err_body.get("message") or str(err_body)
+                st.error(f"Details: {detail}")
+            except Exception:
+                st.error(f"Response: {e.response.text[:500]}")
+        return None
+    except (KeyError, IndexError, TypeError) as e:
+        st.error(f"Unexpected API response format: {e}")
+        return None
+
+
+def analyze_gpu_config(user_input: str) -> str:
+    """
+    Analyze the user's GPU config/log with NVIDIA Nemotron and return
+    formatted optimization suggestions.
+    """
+    api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
+    if not api_key:
+        return ""
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_input or "(No configuration provided.)"},
+    ]
+    result = call_nemotron_chat(messages, api_key)
+    if result:
+        return result
+    # Fallback when parsing or request fails (errors already shown by call_nemotron_chat)
+    return "Analysis could not be completed. Please check your API key and try again."
+
+
+# ---------------------------------------------------------------------------
+# Sample and example inputs for the UI
+# ---------------------------------------------------------------------------
+DEFAULT_SAMPLE = """Model: Llama 13B
+GPU: A100
+Batch size: 4
+GPU utilization: 42%
+Memory usage: 68GB/80GB
+Training time: 20 hours
+Data loading occasionally stalls
+Mixed precision: disabled
+Distributed training: no"""
+
+EXAMPLE_1 = """Model: Llama 13B
+GPU: A100
+Batch size: 4
+GPU utilization: 42%
+Memory usage: 68GB/80GB
+Training time: 20 hours"""
+
+EXAMPLE_2 = """Model: ResNet50
+GPU: H100
+Batch size: 8
+GPU utilization: 35%
+Memory usage: 22GB/80GB
+Training time: 12 hours"""
+
+EXAMPLE_3 = """Inference Model: 7B chatbot
+GPU: A10
+Average latency: 2.8s
+Requests per second: 3
+GPU utilization: 28%
+Batching: disabled"""
+
+
+def _rerun():
+    """Rerun the app (works across Streamlit 1.28–1.50+)."""
+    fn = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+    if fn:
+        fn()
+
+
+def main():
+    st.set_page_config(page_title="GPU Efficiency Advisor", layout="centered")
+    try:
+        _main_content()
+    except Exception as e:
+        st.error(f"Something went wrong: {e}")
+        st.code(str(e), language=None)
+
+
+def _main_content():
+    st.title("GPU Efficiency Advisor using NVIDIA Nemotron")
+    st.caption(
+        "Analyze your GPU training or inference configuration and get actionable "
+        "optimization suggestions powered by NVIDIA Nemotron."
+    )
+    st.divider()
+
+    api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
+    if not api_key:
+        st.warning(
+            "**NVIDIA API key not set.** Add `NVIDIA_API_KEY` to your environment or `.env` file to enable analysis."
+        )
+
+    if "user_config" not in st.session_state:
+        st.session_state["user_config"] = DEFAULT_SAMPLE
+    user_input = st.text_area(
+        "Paste your GPU training config or logs",
+        value=st.session_state["user_config"],
+        height=220,
+        placeholder="Paste configuration or log text here...",
+        key="user_config",
+    )
+
+    if st.button("Analyze", type="primary", use_container_width=True):
+        if not api_key:
+            st.error("Cannot analyze: NVIDIA API key is missing.")
+            return
+        with st.spinner("Analyzing your configuration…"):
+            result = analyze_gpu_config(user_input)
+        if result:
+            st.success("Analysis complete.")
+            # Styled card for the analysis result
+            escaped = html.escape(result).replace("\n", "<br>")
+            st.markdown(
+                '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
+                f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("No suggestions could be generated. See errors above.")
+
+    st.divider()
+    st.subheader("Example inputs")
+    with st.expander("Example 1: Llama 13B on A100"):
+        st.text(EXAMPLE_1)
+        if st.button("Use Example 1", key="ex1"):
+            st.session_state["user_config"] = EXAMPLE_1
+            _rerun()
+    with st.expander("Example 2: ResNet50 on H100"):
+        st.text(EXAMPLE_2)
+        if st.button("Use Example 2", key="ex2"):
+            st.session_state["user_config"] = EXAMPLE_2
+            _rerun()
+    with st.expander("Example 3: 7B inference on A10"):
+        st.text(EXAMPLE_3)
+        if st.button("Use Example 3", key="ex3"):
+            st.session_state["user_config"] = EXAMPLE_3
+            _rerun()
+
+    st.divider()
+    st.caption(
+        "Built for NVIDIA Hackathon at SJSU | Powered by NVIDIA Nemotron"
+    )
+
+
+if __name__ == "__main__":
+    main()
