@@ -75,20 +75,58 @@ def call_nemotron_chat(messages: list[dict], api_key: str) -> tuple[str | None, 
         resp = requests.post(url, headers=headers, json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
-        # OpenAI-style: choices[0].message.content
+
+        def extract_text(obj: dict) -> str | None:
+            """Pull out a single string from message/content/parts."""
+            if not obj:
+                return None
+            # Direct string fields
+            for key in ("content", "text", "output"):
+                val = obj.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+                # Some APIs use content as list of {"type":"text","text":"..."}
+                if isinstance(val, list):
+                    parts = []
+                    for item in val:
+                        if isinstance(item, dict) and item.get("type") == "text":
+                            t = item.get("text")
+                            if isinstance(t, str) and t.strip():
+                                parts.append(t.strip())
+                        elif isinstance(item, str) and item.strip():
+                            parts.append(item.strip())
+                    if parts:
+                        return "\n".join(parts)
+            return None
+
         choices = data.get("choices")
         if choices and len(choices) > 0:
-            msg = choices[0].get("message") or choices[0].get("delta")
-            if msg and isinstance(msg.get("content"), str):
-                return (msg["content"].strip(), None)
-            # Some APIs use "text" or content in delta
-            if msg:
-                for key in ("content", "text"):
-                    val = msg.get(key)
-                    if isinstance(val, str) and val.strip():
-                        return (val.strip(), None)
-        if isinstance(data.get("content"), str) and data["content"].strip():
-            return (data["content"].strip(), None)
+            choice = choices[0]
+            msg = choice.get("message") or choice.get("delta") or choice
+            out = extract_text(msg)
+            if out:
+                return (out, None)
+        out = extract_text(data)
+        if out:
+            return (out, None)
+        # Last resort: find any substantial string in the response (e.g. nested "text" or "content")
+        def find_first_string(obj, min_len: int = 20) -> str | None:
+            if isinstance(obj, str) and len(obj.strip()) >= min_len:
+                return obj.strip()
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    found = find_first_string(v, min_len)
+                    if found:
+                        return found
+            if isinstance(obj, list):
+                for item in obj:
+                    found = find_first_string(item, min_len)
+                    if found:
+                        return found
+            return None
+        fallback = find_first_string(data)
+        if fallback:
+            return (fallback, None)
         return (None, "API returned no content in the response.")
     except requests.exceptions.Timeout:
         return (None, "Request timed out. The API took too long to respond.")
@@ -210,9 +248,10 @@ def _main_content():
     )
 
     # Show last analysis if we have one (persists across reruns)
-    if st.session_state.get("last_analysis"):
+    last = (st.session_state.get("last_analysis") or "").strip()
+    if last:
         st.success("Analysis complete.")
-        escaped = html.escape(st.session_state["last_analysis"]).replace("\n", "<br>")
+        escaped = html.escape(last).replace("\n", "<br>")
         st.markdown(
             '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
             f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
@@ -228,8 +267,8 @@ def _main_content():
                 result, err = analyze_gpu_config(user_input)
             if err:
                 st.error(f"**Analysis failed:** {err}")
-            elif result:
-                st.session_state["last_analysis"] = result
+            elif result and result.strip():
+                st.session_state["last_analysis"] = result.strip()
                 st.success("Analysis complete.")
                 escaped = html.escape(result).replace("\n", "<br>")
                 st.markdown(
@@ -238,7 +277,10 @@ def _main_content():
                     unsafe_allow_html=True,
                 )
             else:
-                st.warning("No analysis text was returned. Check your API key and try again.")
+                st.warning(
+                    "The API returned an empty response. Your key may be invalid, or the model may not support this endpoint. "
+                    "Check [NVIDIA API Catalog](https://build.nvidia.com) for the correct model and key."
+                )
 
     st.divider()
     st.subheader("Example inputs")
