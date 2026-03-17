@@ -54,10 +54,10 @@ Important:
 - If the input is incomplete, still provide best-effort recommendations based on the available details"""
 
 
-def call_nemotron_chat(messages: list[dict], api_key: str) -> str | None:
+def call_nemotron_chat(messages: list[dict], api_key: str) -> tuple[str | None, str | None]:
     """
-    Send a chat-style request to NVIDIA Nemotron and return the assistant reply.
-    Returns None on failure. Defensive parsing for varying response shapes.
+    Send a chat-style request to NVIDIA Nemotron and return (content, error_message).
+    Defensive parsing for varying response shapes.
     """
     url = f"{NEMOTRON_API_BASE}/chat/completions"
     headers = {
@@ -72,7 +72,7 @@ def call_nemotron_chat(messages: list[dict], api_key: str) -> str | None:
         "stream": False,
     }
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
+        resp = requests.post(url, headers=headers, json=payload, timeout=120)
         resp.raise_for_status()
         data = resp.json()
         # OpenAI-style: choices[0].message.content
@@ -80,44 +80,49 @@ def call_nemotron_chat(messages: list[dict], api_key: str) -> str | None:
         if choices and len(choices) > 0:
             msg = choices[0].get("message") or choices[0].get("delta")
             if msg and isinstance(msg.get("content"), str):
-                return msg["content"].strip()
-        # Fallback: try to find any content in the response
-        if isinstance(data.get("content"), str):
-            return data["content"].strip()
-        return None
+                return (msg["content"].strip(), None)
+            # Some APIs use "text" or content in delta
+            if msg:
+                for key in ("content", "text"):
+                    val = msg.get(key)
+                    if isinstance(val, str) and val.strip():
+                        return (val.strip(), None)
+        if isinstance(data.get("content"), str) and data["content"].strip():
+            return (data["content"].strip(), None)
+        return (None, "API returned no content in the response.")
+    except requests.exceptions.Timeout:
+        return (None, "Request timed out. The API took too long to respond.")
     except requests.exceptions.RequestException as e:
-        st.error(f"API request failed: {e}")
+        err_msg = str(e)
         if hasattr(e, "response") and e.response is not None:
             try:
                 err_body = e.response.json()
-                detail = err_body.get("detail") or err_body.get("message") or str(err_body)
-                st.error(f"Details: {detail}")
+                detail = err_body.get("detail") or err_body.get("message") or err_body.get("error") or str(err_body)
+                err_msg = f"{e}: {detail}"
             except Exception:
-                st.error(f"Response: {e.response.text[:500]}")
-        return None
+                err_msg = f"{e}. Response: {e.response.text[:300]}"
+        return (None, err_msg)
     except (KeyError, IndexError, TypeError) as e:
-        st.error(f"Unexpected API response format: {e}")
-        return None
+        return (None, f"Unexpected API response format: {e}")
 
 
-def analyze_gpu_config(user_input: str) -> str:
+def analyze_gpu_config(user_input: str) -> tuple[str | None, str | None]:
     """
-    Analyze the user's GPU config/log with NVIDIA Nemotron and return
-    formatted optimization suggestions.
+    Analyze the user's GPU config/log with NVIDIA Nemotron.
+    Returns (result_text, error_message). One of them is None.
     """
     api_key = os.environ.get("NVIDIA_API_KEY", "").strip()
     if not api_key:
-        return ""
+        return (None, "NVIDIA API key is not set.")
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_input or "(No configuration provided.)"},
     ]
-    result = call_nemotron_chat(messages, api_key)
-    if result:
-        return result
-    # Fallback when parsing or request fails (errors already shown by call_nemotron_chat)
-    return "Analysis could not be completed. Please check your API key and try again."
+    content, err = call_nemotron_chat(messages, api_key)
+    if content:
+        return (content, None)
+    return (None, err or "Analysis could not be completed. Please check your API key and try again.")
 
 
 # ---------------------------------------------------------------------------
@@ -204,23 +209,36 @@ def _main_content():
         key="user_config",
     )
 
+    # Show last analysis if we have one (persists across reruns)
+    if st.session_state.get("last_analysis"):
+        st.success("Analysis complete.")
+        escaped = html.escape(st.session_state["last_analysis"]).replace("\n", "<br>")
+        st.markdown(
+            '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
+            f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
+            unsafe_allow_html=True,
+        )
+        st.divider()
+
     if st.button("Analyze", type="primary", use_container_width=True):
         if not api_key:
             st.error("Cannot analyze: NVIDIA API key is missing.")
-            return
-        with st.spinner("Analyzing your configuration…"):
-            result = analyze_gpu_config(user_input)
-        if result:
-            st.success("Analysis complete.")
-            # Styled card for the analysis result
-            escaped = html.escape(result).replace("\n", "<br>")
-            st.markdown(
-                '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
-                f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
-                unsafe_allow_html=True,
-            )
         else:
-            st.info("No suggestions could be generated. See errors above.")
+            with st.spinner("Calling NVIDIA Nemotron API… this may take 30–60 seconds."):
+                result, err = analyze_gpu_config(user_input)
+            if err:
+                st.error(f"**Analysis failed:** {err}")
+            elif result:
+                st.session_state["last_analysis"] = result
+                st.success("Analysis complete.")
+                escaped = html.escape(result).replace("\n", "<br>")
+                st.markdown(
+                    '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
+                    f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.warning("No analysis text was returned. Check your API key and try again.")
 
     st.divider()
     st.subheader("Example inputs")
