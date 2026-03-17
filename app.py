@@ -4,7 +4,6 @@ Hackathon MVP - single-file Streamlit app.
 """
 from __future__ import annotations
 
-import html
 import os
 import streamlit as st
 import requests
@@ -210,11 +209,15 @@ def main():
     try:
         _main_content()
     except Exception as e:
-        st.error(f"Something went wrong: {e}")
-        st.code(str(e), language=None)
+        st.error("Something went wrong")
+        st.exception(e)
 
 
 def _main_content():
+    # Ensure session_state keys exist (avoids white screen on first load)
+    if "user_config" not in st.session_state:
+        st.session_state["user_config"] = DEFAULT_SAMPLE
+
     # Apply "Use Example" before any widget that uses user_config (Streamlit rule)
     load_example = st.session_state.pop("load_example", None)
     if load_example == 1:
@@ -237,8 +240,6 @@ def _main_content():
             "**NVIDIA API key not set.** Add `NVIDIA_API_KEY` to your environment or `.env` file to enable analysis."
         )
 
-    if "user_config" not in st.session_state:
-        st.session_state["user_config"] = DEFAULT_SAMPLE
     user_input = st.text_area(
         "Paste your GPU training config or logs",
         value=st.session_state["user_config"],
@@ -251,12 +252,9 @@ def _main_content():
     last = (st.session_state.get("last_analysis") or "").strip()
     if last:
         st.success("Analysis complete.")
-        escaped = html.escape(last).replace("\n", "<br>")
-        st.markdown(
-            '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
-            f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
-            unsafe_allow_html=True,
-        )
+        with st.container():
+            st.markdown("**Analysis result:**")
+            st.markdown(last.replace("\n", "  \n"))  # line breaks in markdown
         st.divider()
 
     if st.button("Analyze", type="primary", use_container_width=True):
@@ -270,12 +268,8 @@ def _main_content():
             elif result and result.strip():
                 st.session_state["last_analysis"] = result.strip()
                 st.success("Analysis complete.")
-                escaped = html.escape(result).replace("\n", "<br>")
-                st.markdown(
-                    '<div style="background:#f8f9fa; border:1px solid #dee2e6; border-radius:8px; '
-                    f'padding:1.25rem; margin:1rem 0;">{escaped}</div>',
-                    unsafe_allow_html=True,
-                )
+                st.markdown("**Analysis result:**")
+                st.markdown(result.replace("\n", "  \n"))
             else:
                 st.warning(
                     "The API returned an empty response. Your key may be invalid, or the model may not support this endpoint. "
