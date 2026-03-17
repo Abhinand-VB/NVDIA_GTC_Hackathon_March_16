@@ -222,10 +222,13 @@ def _main_content():
     load_example = st.session_state.pop("load_example", None)
     if load_example == 1:
         st.session_state["user_config"] = EXAMPLE_1
+        st.session_state.pop("last_analysis", None)  # clear old result when switching example
     elif load_example == 2:
         st.session_state["user_config"] = EXAMPLE_2
+        st.session_state.pop("last_analysis", None)
     elif load_example == 3:
         st.session_state["user_config"] = EXAMPLE_3
+        st.session_state.pop("last_analysis", None)
 
     st.title("GPU Efficiency Advisor using NVIDIA Nemotron")
     st.caption(
@@ -248,15 +251,6 @@ def _main_content():
         key="user_config",
     )
 
-    # Show last analysis if we have one (persists across reruns)
-    last = (st.session_state.get("last_analysis") or "").strip()
-    if last:
-        st.success("Analysis complete.")
-        with st.container():
-            st.markdown("**Analysis result:**")
-            st.markdown(last.replace("\n", "  \n"))  # line breaks in markdown
-        st.divider()
-
     if st.button("Analyze", type="primary", use_container_width=True):
         if not api_key:
             st.error("Cannot analyze: NVIDIA API key is missing.")
@@ -267,14 +261,20 @@ def _main_content():
                 st.error(f"**Analysis failed:** {err}")
             elif result and result.strip():
                 st.session_state["last_analysis"] = result.strip()
-                st.success("Analysis complete.")
-                st.markdown("**Analysis result:**")
-                st.markdown(result.replace("\n", "  \n"))
             else:
+                st.session_state.pop("last_analysis", None)
                 st.warning(
                     "The API returned an empty response. Your key may be invalid, or the model may not support this endpoint. "
                     "Check [NVIDIA API Catalog](https://build.nvidia.com) for the correct model and key."
                 )
+
+    # Show last analysis in one place below the button (cleared when user picks a new example)
+    last = (st.session_state.get("last_analysis") or "").strip()
+    if last:
+        st.divider()
+        st.success("Analysis complete.")
+        st.markdown("**Analysis result:**")
+        st.markdown(last.replace("\n", "  \n"))
 
     st.divider()
     st.subheader("Example inputs")
