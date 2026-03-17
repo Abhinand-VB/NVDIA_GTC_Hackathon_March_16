@@ -172,6 +172,15 @@ def main():
 
 
 def _main_content():
+    # Apply "Use Example" before any widget that uses user_config (Streamlit rule)
+    load_example = st.session_state.pop("load_example", None)
+    if load_example == 1:
+        st.session_state["user_config"] = EXAMPLE_1
+    elif load_example == 2:
+        st.session_state["user_config"] = EXAMPLE_2
+    elif load_example == 3:
+        st.session_state["user_config"] = EXAMPLE_3
+
     st.title("GPU Efficiency Advisor using NVIDIA Nemotron")
     st.caption(
         "Analyze your GPU training or inference configuration and get actionable "
@@ -218,17 +227,17 @@ def _main_content():
     with st.expander("Example 1: Llama 13B on A100"):
         st.text(EXAMPLE_1)
         if st.button("Use Example 1", key="ex1"):
-            st.session_state["user_config"] = EXAMPLE_1
+            st.session_state["load_example"] = 1
             _rerun()
     with st.expander("Example 2: ResNet50 on H100"):
         st.text(EXAMPLE_2)
         if st.button("Use Example 2", key="ex2"):
-            st.session_state["user_config"] = EXAMPLE_2
+            st.session_state["load_example"] = 2
             _rerun()
     with st.expander("Example 3: 7B inference on A10"):
         st.text(EXAMPLE_3)
         if st.button("Use Example 3", key="ex3"):
-            st.session_state["user_config"] = EXAMPLE_3
+            st.session_state["load_example"] = 3
             _rerun()
 
     st.divider()
